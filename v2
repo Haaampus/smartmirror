@@ -1,0 +1,184 @@
+from Tkinter import *  #Främst för ImageTk
+import json #decode jsonrequests IP
+import threading #Behövdes för locale lock
+import locale #Datum, land osv.
+import time  #Float tid. strftime låter mig även använda datum
+import requests #Hämtar ip, plats och väder
+import feedparser
+import traceback #Används för att printa ut error för ip, väder och nyheter.
+
+from PIL import Image, ImageTk
+from contextlib import contextmanager
+
+ui_locale = 'sv_SE'
+latitude = None
+longitude = None
+
+time_format = 24
+date_format = "%d %b, %Y"
+
+news_country_code = 'se'
+weather_api_token = '<TOKEN>' # skapa konto på https://darksky.net/dev/ eller annan hemsida
+weather_lang = 'sv'
+weather_unit = 'si'
+
+LOCALE_LOCK = threading.Lock()
+
+@contextmanager
+def setlocale(lokal):
+    with LOCALE_LOCK:
+        spara = locale.setlocale(locale.LC_ALL)
+        try:
+            yield locale.setlocale(locale.LC_ALL, lokal)
+        finally:
+            locale.setlocale(locale.LC_ALL, spara)
+
+#ikoner för väder
+icon_lookup = {
+    'clear-day': "",  # klar dag
+    'wind': "",   #vind/blåst
+    'cloudy': "",  # molnigt
+    'partly-cloudy-day': "",  # smått molnigt
+    'rain': "",  # regn
+    'snow': "",  # snö
+    'snow-thin': "",  # snö med regn
+    'fog': "",  # dimmigt
+    'clear-night': "",  # klar natt
+    'partly-cloudy-night': "",  # smått molnig natt
+    'thunderstorm': "",  # åska
+    'hail': ""  # hagel
+}
+
+
+class Clock(Frame):
+    #def __init__(self, parent, *args, **kwargs):
+        # veckodagar
+        self.veckodag = ''
+        # tid
+        self.time = ''
+        # datum
+        self.date = ''
+        self.tick()
+
+    def tick(self):
+        with setlocale(ui_locale):
+            time = time.strftime('%H:%M') #24 timmar
+            veckodag = time.strftime('%A')
+            date = time.strftime(date_format)
+            self.timeLbl.after(800, self.tick)
+
+
+#class Weather(Frame):
+        #self.location = ''
+        #self.currently = ''
+        #self.icon = ''
+        #self.forecast = ''
+        #self.temperature = ''
+        #self.get_weather()
+
+    def get_ip(self):
+        try:
+            ip_url = "http://jsonip.com/"
+            req = requests.get(ip_url)
+            ip_json = json.loads(req.text)
+            return ip_json['ip']
+        except Exception as e:
+            traceback.print_exc()
+            return "Error: %s. Kan ej hämta IP." % e
+
+    def get_weather(self):
+        try:
+
+            if latitude is None and longitude is None:
+                # hämta plats
+                location_req_url = "http://ip-api.com/json" % self.get_ip()
+                r = requests.get(location_req_url)
+                location_obj = json.loads(r.text)
+
+                lat = location_obj['latitude']
+                lon = location_obj['longitude']
+
+                location2 = "%s, %s" % (location_obj['city'], location_obj['region_code'])
+
+                #väder
+                weather_req_url = "" % (weather_api_token, lat,lon,weather_lang,weather_unit)
+            else:
+                location2 = ""
+                #väder reserv
+                weather_req_url = "" % (weather_api_token, latitude, longitude, weather_lang, weather_unit)
+
+            r = requests.get(weather_req_url)
+            weather_obj = json.loads(r.text)
+
+            degree_sign= u'\N{DEGREE SIGN}'
+            temperature2 = "%s%s" % (str(int(weather_obj['currently']['temperature'])), degree_sign)
+            currently2 = weather_obj['currently']['summary']
+            forecast2 = weather_obj["hourly"]["summary"]
+
+            icon_id = weather_obj['currently']['icon']
+            icon2 = None
+
+            if icon_id in icon_lookup:
+                icon2 = icon_lookup[icon_id]
+
+            if icon2 is not None:
+                if self.icon != icon2:
+                    self.icon = icon2
+                    image = Image.open(icon2)
+                    image = image.resize((100, 100), Image.ANTIALIAS) #Antialias ger mjukare kanter
+                    image = image.convert('RGB')
+                    bild = ImageTk.PhotoImage(image)
+
+                    self.iconLbl.config(image=bild)
+                    self.iconLbl.image = bild
+            else:
+                #ta bort bild
+                self.iconLbl.config(image='')
+
+            if self.currently != currently2:
+                self.currently = currently2
+                self.currentlyLbl.config(text=currently2)
+            if self.forecast != forecast2:
+                self.forecast = forecast2
+                self.forecastLbl.config(text=forecast2)
+            if self.temperature != temperature2:
+                self.temperature = temperature2
+                self.temperatureLbl.config(text=temperature2)
+            if self.location != location2:
+                if location2 == ", ":
+                    self.location = "Kan inte hitta plats"
+                    self.locationLbl.config(text="Kan inte hitta plats")
+                else:
+                    self.location = location2
+                    self.locationLbl.config(text=location2)
+        except Exception as e:
+            traceback.print_exc()
+            print("Error: %s. Kan ej hämta väder.") % e
+
+        self.after(600000, self.get_weather)
+
+    @staticmethod
+    def kelvin_till_fahrenheit(kelvin_temp):
+        return 1.8 * (kelvin_temp - 273) + 32
+
+
+    def get_headlines(self):
+        try:
+            for widget in self.headlinesContainer.winfo_children():
+                widget.destroy()
+            if news_country_code == None:
+                headlines_url = "https://news.google.com/news?ned=us&output=rss"
+            else:
+                headlines_url = "https://news.google.com/news?ned=%s&output=rss" % news_country_code
+
+            feed = feedparser.parse(headlines_url)
+
+            for post in feed.entries[0:5]:
+                headline = NewsHeadline(self.headlinesContainer, post.title)
+                headline.pack(side=TOP, anchor=W)
+        except Exception as e:
+            traceback.print_exc()
+            print("Error: %s. Kan ej hämta nyheter.") % e
+
+        self.after(600000, self.get_headlines)
+
